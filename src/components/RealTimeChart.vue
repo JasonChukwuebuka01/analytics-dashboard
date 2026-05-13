@@ -10,11 +10,11 @@ import {
     CategoryScale,
     Filler,
     Tooltip,
-    Legend
+    Legend,
+    type TooltipItem
 } from 'chart.js'
 
-// 1. REGISTER: We tell Chart.js exactly which pieces we need.
-// This is the "5-star" way to ensure TypeScript knows what's going on.
+// 1. REGISTER
 Chart.register(
     LineController,
     LineElement,
@@ -27,7 +27,6 @@ Chart.register(
     Legend
 )
 
-// 2. PROPS: Receiving our live data from the Pinia Store
 const props = defineProps<{
     chartData: { timestamp: string; value: number }[]
 }>()
@@ -35,7 +34,7 @@ const props = defineProps<{
 const canvasRef = ref<HTMLCanvasElement | null>(null)
 let chartInstance: Chart | null = null
 
-// 3. INITIALIZE: Create the chart instance on mount
+// 3. INITIALIZE
 onMounted(() => {
     if (!canvasRef.value) return
 
@@ -44,62 +43,83 @@ onMounted(() => {
         data: {
             labels: props.chartData.map(d => d.timestamp),
             datasets: [{
-                label: 'System Load',
+                label: 'BTC/USDT Price',
                 data: props.chartData.map(d => d.value),
-                borderColor: '#f97316', // Tailwind orange-500
-                backgroundColor: 'rgba(249, 115, 22, 0.1)', // Subtle orange glow
+                borderColor: '#f59e0b', // Amber-500
+                backgroundColor: 'rgba(245, 158, 11, 0.05)',
                 fill: true,
-                tension: 0.4, // Smooth "organic" curves
-                pointRadius: 0, // Hiding points for a cleaner "streaming" look
-                borderWidth: 2
+                tension: 0.4,
+                pointRadius: 0,
+                borderWidth: 2.5,
+                borderCapStyle: 'round'
             }]
         },
         options: {
             responsive: true,
             maintainAspectRatio: false,
-            // Performance trick: disable animations for the initial load
-            // so it doesn't "bounce" every time a single point is added
             animation: {
-                duration: 400,
-                easing: 'linear'
+                duration: 0
             },
             scales: {
                 y: {
-                    beginAtZero: true,
-                    max: 100,
-                    grid: { color: 'rgba(255, 255, 255, 0.05)' },
-                    ticks: { color: '#64748b' }
+                    beginAtZero: false,
+                    grace: '5%',
+                    grid: {
+                        color: 'rgba(255, 255, 255, 0.03)',
+                        drawTicks: false
+                    },
+                    ticks: {
+                        color: '#475569',
+                        font: { size: 10, family: 'monospace' },
+                        callback: (value) => '$' + Number(value).toLocaleString()
+                    }
                 },
                 x: {
                     grid: { display: false },
-                    ticks: { color: '#64748b', maxRotation: 0 }
+                    ticks: {
+                        color: '#475569',
+                        font: { size: 9 },
+                        maxRotation: 0,
+                        autoSkip: true,
+                        maxTicksLimit: 6
+                    }
                 }
             },
             plugins: {
-                legend: { display: false }
+                legend: { display: false },
+                tooltip: {
+                    mode: 'index',
+                    intersect: false,
+                    backgroundColor: '#0f172a',
+                    titleColor: '#f59e0b',
+                    bodyFont: { family: 'monospace' },
+                    callbacks: {
+                        // FIX: Added optional chaining and type safety to prevent null errors
+                        label: (context: TooltipItem<'line'>) => {
+                            const val = context.parsed.y;
+                            return ` Price: $${val !== null && val !== undefined ? val.toLocaleString() : '---'}`;
+                        }
+                    }
+                }
             }
         }
     })
 })
 
-// 4. THE WATCHER: The "useEffect" that updates the chart
-watch(
-    () => props.chartData,
-    (newData) => {
-        // Check if the instance and the specific dataset exist before touching them
-        if (chartInstance && chartInstance.data.datasets[0]) {
-            chartInstance.data.labels = newData.map(d => d.timestamp)
+watch(() => props.chartData, (newData) => {
+    
+    if (chartInstance && chartInstance.data.datasets[0]) {
+        chartInstance.data.labels = newData.map(d => d.timestamp);
+        chartInstance.data.datasets[0].data = newData.map(d => d.value);
 
-            // We cast the data or use a safer assignment
-            chartInstance.data.datasets[0].data = newData.map(d => d.value)
+        // If the data length just changed significantly (user clicked a button)
+        // let it animate so the user sees the 'snap'
+        const isRangeSwitch = Math.abs(chartInstance.data.labels.length - newData.length) > 5;
 
-            chartInstance.update('none')
-        }
-    },
-    { deep: true }
-)
+        chartInstance.update(isRangeSwitch ? 'default' : 'none');
+    }
+}, { deep: true });
 
-// 5. CLEANUP: Vital for "Performance Optimization" grade
 onUnmounted(() => {
     if (chartInstance) {
         chartInstance.destroy()
@@ -108,7 +128,10 @@ onUnmounted(() => {
 </script>
 
 <template>
-    <div class="relative h-full w-full">
+    <div class="relative h-full w-full p-2">
+        <div class="absolute top-4 left-4 z-10 pointer-events-none">
+            <p class="text-[10px] font-bold text-slate-500 uppercase tracking-widest">Market Volatility Index</p>
+        </div>
         <canvas ref="canvasRef"></canvas>
     </div>
 </template>
