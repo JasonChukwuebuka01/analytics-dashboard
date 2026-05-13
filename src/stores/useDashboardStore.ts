@@ -1,83 +1,157 @@
 import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
+import { hybridCryptoService } from '../services/hybridCryptoService'
 
-export interface MetricPoint {
+// --- TYPED DATA MODELS ---
+export interface ChartPoint {
   timestamp: string
   value: number
 }
 
-// 1. Define what a "Log" looks like
-export interface LogEntry {
+export interface MarketLog {
   id: string
   timestamp: string
   message: string
   type: 'info' | 'warning' | 'error'
 }
 
+export type TimeRange = '1m' | '5m' | '1h' | 'LIVE'
+
 export const useDashboardStore = defineStore('dashboard', () => {
-  const cpuUsage = ref<MetricPoint[]>([])
-  const logs = ref<LogEntry[]>([]) // New state for logs
+  // --- STATE ---
+  const cpuUsage = ref<ChartPoint[]>([])
+  const volumeData = ref<ChartPoint[]>([])
+  const logs = ref<MarketLog[]>([])
   const isStreaming = ref(false)
-  let timer: ReturnType<typeof setInterval> | null = null
+  const isUsingMock = ref(false)
+  const userLocation = ref('Detecting...')
+  
+  // Filtering & Range State
+  const searchQuery = ref('')
+  const filterLevel = ref<'all' | 'info' | 'warning' | 'error'>('all')
+  const selectedRange = ref<TimeRange>('LIVE') // NEW: Requirement 3
+
+  // --- GETTERS ---
+  const latestValue = computed(() => cpuUsage.value[cpuUsage.value.length - 1]?.value || 0)
+
+  // Interactive Data Slicing (Requirement 3 & 4)
+  // This allows the charts to switch views without losing the actual stream data
+  const filteredChartData = computed(() => {
+    const data = cpuUsage.value
+    if (selectedRange.value === 'LIVE') return data
+    
+    // Assuming 1 update per second: 1m = 60pts, 5m = 300pts, 1h = 3600pts
+    const limit = selectedRange.value === '1m' ? 60 : selectedRange.value === '5m' ? 300 : 3600
+    return data.slice(-limit)
+  })
+
+  const filteredVolumeData = computed(() => {
+    const data = volumeData.value
+    if (selectedRange.value === 'LIVE') return data
+    const limit = selectedRange.value === '1m' ? 30 : selectedRange.value === '5m' ? 150 : 500
+    return data.slice(-limit)
+  })
+
+  const filteredLogs = computed(() => {
+    return logs.value.filter(log => {
+      const matchesSearch = log.message.toLowerCase().includes(searchQuery.value.toLowerCase())
+      const matchesLevel = filterLevel.value === 'all' || log.type === filterLevel.value
+      return matchesSearch && matchesLevel
+    })
+  })
+
+  // --- ACTIONS ---
+  const detectLocation = async () => {
+    try {
+      const res = await fetch('https://ipapi.co/json/')
+      const data = await res.json()
+      userLocation.value = data.city ? `${data.city}, ${data.region_code}` : 'Global Node'
+    } catch (e) {
+      userLocation.value = 'Global Node'
+    }
+  }
 
   const startStream = () => {
     if (isStreaming.value) return
     isStreaming.value = true
+    detectLocation()
 
-    timer = setInterval(() => {
-      const timestamp = new Date().toLocaleTimeString()
-      const newValue = Math.floor(Math.random() * 100)
+    hybridCryptoService.connect((data, isMock) => {
+      isUsingMock.value = isMock
+      const time = new Date().toLocaleTimeString()
+      const price = parseFloat(data.price)
       
-      const newPoint: MetricPoint = { timestamp, value: newValue }
-      cpuUsage.value.push(newPoint)
+      const prevPrice = cpuUsage.value[cpuUsage.value.length - 1]?.value || price
+      const diff = Math.abs(price - prevPrice)
+      const percentChange = (diff / prevPrice) * 100
+      
+      const baseVolume = Math.floor(Math.random() * 300) + 50
+      const volume = percentChange > 0.3 ? baseVolume * 3 : baseVolume
 
-      if (cpuUsage.value.length > 20) cpuUsage.value.shift()
+      let type: 'info' | 'warning' | 'error' = 'info'
+      let message = ''
 
-      // 2. Logic: Create a log based on the value
-      generateLog(newValue, timestamp)
-    }, 1000)
-  }
+      if (percentChange > 0.5) {
+        type = 'error'
+        message = `🚨 VOLATILITY ALERT: BTC shifted ${percentChange.toFixed(2)}% at $${price.toLocaleString()}`
+      } else if (isMock) {
+        type = 'warning'
+        message = `[SIM] Market ping: $${price.toLocaleString()}`
+      } else {
+        type = 'info'
+        message = `Live trade confirmed: $${price.toLocaleString()}`
+      }
 
-  // 3. Helper function to create logs
-  const generateLog = (value: number, time: string) => {
-    let type: 'info' | 'warning' | 'error' = 'info'
-    let message = `System check: CPU at ${value}%`
+      // Buffer Management (Requirement 4: Prevent memory leaks)
+      // We keep a larger buffer in state than we show in 'LIVE' to support range switching
+      cpuUsage.value.push({ timestamp: time, value: price })
+      if (cpuUsage.value.length > 1000) cpuUsage.value.shift() 
 
-    if (value > 90) {
-      type = 'error'
-      message = `CRITICAL: CPU usage peaked at ${value}%!`
-    } else if (value > 70) {
-      type = 'warning'
-      message = `Warning: High load detected (${value}%)`
-    }
+      volumeData.value.push({ timestamp: time, value: volume })
+      if (volumeData.value.length > 500) volumeData.value.shift()
 
-    const newLog: LogEntry = {
-      id: crypto.randomUUID(), // Unique ID for Vue's list tracking
-      timestamp: time,
-      message,
-      type
-    }
+      logs.value.unshift({ 
+        id: crypto.randomUUID(), 
+        timestamp: time, 
+        message, 
+        type 
+      })
 
-    // Add to the START of the array (newest first)
-    logs.value.unshift(newLog)
-
-    // Keep only the last 50 logs for performance
-    if (logs.value.length > 50) logs.value.pop()
+      if (logs.value.length > 50) logs.value.pop()
+    })
   }
 
   const stopStream = () => {
-    if (timer) clearInterval(timer)
+    hybridCryptoService.disconnect()
     isStreaming.value = false
+    
+    // Performance Optimization: Clear buffers on termination
+    cpuUsage.value = []
+    volumeData.value = []
+    
+    logs.value.unshift({
+        id: crypto.randomUUID(),
+        timestamp: new Date().toLocaleTimeString(),
+        message: "SYSTEM_OFFLINE: All uplinks terminated. Buffers cleared.",
+        type: 'warning'
+    })
   }
-
-  const latestValue = computed(() => cpuUsage.value.at(-1)?.value ?? 0)
 
   return { 
     cpuUsage, 
-    logs, // Export logs
+    volumeData,
+    logs, 
     isStreaming, 
+    isUsingMock, 
+    userLocation, 
+    latestValue, 
+    searchQuery, 
+    filterLevel, 
+    selectedRange, 
+    filteredChartData, 
+    filteredVolumeData, 
+    filteredLogs, 
     startStream, 
-    stopStream, 
-    latestValue 
+    stopStream 
   }
 })
