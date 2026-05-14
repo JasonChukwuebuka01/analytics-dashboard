@@ -5,30 +5,54 @@ export class HybridCryptoService {
   private usingMock = false
 
   connect(onMessage: (data: any, isMock: boolean) => void) {
-    // Attempt real connection
+    // Clean up any existing instances before reconnecting
+    this.disconnect()
+
     this.socket = new WebSocket('wss://ws.cex.io/ws/')
 
     this.socket.onopen = () => {
+      console.log('--- SYSTEM_UPLINK: CEX.IO ESTABLISHED ---')
       this.stopMock()
       this.usingMock = false
-      this.socket?.send(JSON.stringify({ e: "subscribe", rooms: ["tickers"] }))
+      
+      // Correct subscription for specific pair
+      this.socket?.send(JSON.stringify({
+        e: "subscribe",
+        rooms: ["pair-BTC-USD"] // CEX often uses USD for their main web socket
+      }))
     }
 
     this.socket.onmessage = (event) => {
       try {
         const res = JSON.parse(event.data)
-        if (res.e === "tick" && res.data?.symbol === "BTC:USDT") {
-          onMessage({
-            price: res.data.last,
-            change24h: parseFloat(res.data.change24h || "0")
+
+        // HEARTBEAT: CEX.IO sends { e: "ping" }, we MUST send { e: "pong" }
+        if (res.e === "ping") {
+          this.socket?.send(JSON.stringify({ e: "pong" }))
+          return
+        }
+
+        // PARSING: Look for tick events
+        if (res.e === "tick" && res.data) {
+           onMessage({
+            price: res.data.price,
+            change24h: parseFloat(res.data.priceChange || "0")
           }, false) 
         }
-      } catch (e) {}
+      } catch (e) {
+        console.error("Stream Parsing Error", e)
+      }
     }
 
-    // If data is cut, trigger mock immediately
-    this.socket.onerror = () => this.startMock(onMessage)
-    this.socket.onclose = () => this.startMock(onMessage)
+    this.socket.onerror = (err) => {
+      console.error('Uplink Error:', err)
+      this.startMock(onMessage)
+    }
+    
+    this.socket.onclose = () => {
+      console.warn('Uplink Terminated: Activating Failover')
+      this.startMock(onMessage)
+    }
   }
 
   private startMock(onMessage: (data: any, isMock: boolean) => void) {
@@ -37,6 +61,7 @@ export class HybridCryptoService {
 
     this.mockInterval = setInterval(() => {
       const rand = Math.random()
+      // Simulate industrial volatility
       if (rand > 0.90) this.price += Math.random() * 500
       else if (rand > 0.80) this.price -= Math.random() * 400
       else this.price += (Math.random() - 0.5) * 50
@@ -44,7 +69,7 @@ export class HybridCryptoService {
       onMessage({
         price: parseFloat(this.price.toFixed(2)),
         change24h: 1.2,
-        volume: 1200
+        volume: Math.floor(Math.random() * 1000)
       }, true)
     }, 1100)
   }
@@ -55,7 +80,10 @@ export class HybridCryptoService {
   }
 
   disconnect() {
-    if (this.socket) this.socket.close()
+    if (this.socket) {
+        this.socket.onclose = null // Prevent triggering mock on intentional close
+        this.socket.close()
+    }
     this.stopMock()
     this.usingMock = false
   }

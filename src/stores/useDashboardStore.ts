@@ -16,6 +16,7 @@ export interface MarketLog {
 }
 
 export type TimeRange = '1m' | '5m' | '1h' | 'LIVE'
+export type ThemeMode = 'light' | 'dark'
 
 export const useDashboardStore = defineStore('dashboard', () => {
   // --- STATE ---
@@ -29,18 +30,19 @@ export const useDashboardStore = defineStore('dashboard', () => {
   // Filtering & Range State
   const searchQuery = ref('')
   const filterLevel = ref<'all' | 'info' | 'warning' | 'error'>('all')
-  const selectedRange = ref<TimeRange>('LIVE') // NEW: Requirement 3
+  const selectedRange = ref<TimeRange>('LIVE')
+
+  // Theme State (NEW)
+  const theme = ref<ThemeMode>(
+    (localStorage.getItem('vortex-theme') as ThemeMode) || 'dark'
+  )
 
   // --- GETTERS ---
   const latestValue = computed(() => cpuUsage.value[cpuUsage.value.length - 1]?.value || 0)
 
-  // Interactive Data Slicing (Requirement 3 & 4)
-  // This allows the charts to switch views without losing the actual stream data
   const filteredChartData = computed(() => {
     const data = cpuUsage.value
     if (selectedRange.value === 'LIVE') return data
-    
-    // Assuming 1 update per second: 1m = 60pts, 5m = 300pts, 1h = 3600pts
     const limit = selectedRange.value === '1m' ? 60 : selectedRange.value === '5m' ? 300 : 3600
     return data.slice(-limit)
   })
@@ -61,6 +63,22 @@ export const useDashboardStore = defineStore('dashboard', () => {
   })
 
   // --- ACTIONS ---
+
+  // Theme Actions (NEW)
+  const applyTheme = () => {
+    if (theme.value === 'dark') {
+      document.documentElement.classList.add('dark')
+    } else {
+      document.documentElement.classList.remove('dark')
+    }
+  }
+
+  const toggleTheme = () => {
+    theme.value = theme.value === 'dark' ? 'light' : 'dark'
+    localStorage.setItem('vortex-theme', theme.value)
+    applyTheme()
+  }
+
   const detectLocation = async () => {
     try {
       const res = await fetch('https://ipapi.co/json/')
@@ -75,6 +93,7 @@ export const useDashboardStore = defineStore('dashboard', () => {
     if (isStreaming.value) return
     isStreaming.value = true
     detectLocation()
+    applyTheme() 
 
     hybridCryptoService.connect((data, isMock) => {
       isUsingMock.value = isMock
@@ -102,8 +121,6 @@ export const useDashboardStore = defineStore('dashboard', () => {
         message = `Live trade confirmed: $${price.toLocaleString()}`
       }
 
-      // Buffer Management (Requirement 4: Prevent memory leaks)
-      // We keep a larger buffer in state than we show in 'LIVE' to support range switching
       cpuUsage.value.push({ timestamp: time, value: price })
       if (cpuUsage.value.length > 1000) cpuUsage.value.shift() 
 
@@ -124,8 +141,6 @@ export const useDashboardStore = defineStore('dashboard', () => {
   const stopStream = () => {
     hybridCryptoService.disconnect()
     isStreaming.value = false
-    
-    // Performance Optimization: Clear buffers on termination
     cpuUsage.value = []
     volumeData.value = []
     
@@ -136,6 +151,9 @@ export const useDashboardStore = defineStore('dashboard', () => {
         type: 'warning'
     })
   }
+
+  // Initial Theme Run
+  applyTheme()
 
   return { 
     cpuUsage, 
@@ -148,6 +166,8 @@ export const useDashboardStore = defineStore('dashboard', () => {
     searchQuery, 
     filterLevel, 
     selectedRange, 
+    theme,           
+    toggleTheme,     
     filteredChartData, 
     filteredVolumeData, 
     filteredLogs, 
